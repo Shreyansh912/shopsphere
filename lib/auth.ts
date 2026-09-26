@@ -1,0 +1,78 @@
+import { NextAuthOptions } from "next-auth";
+import CredentialsProvider from "next-auth/providers/credentials";
+import GoogleProvider from "next-auth/providers/google";
+import { prisma } from "@/lib/prisma";
+import bcrypt from "bcryptjs";
+
+export const authOptions: NextAuthOptions = {
+  session: {
+    strategy: "jwt",
+  },
+  pages: {
+    signIn: "/login",
+  },
+  providers: [
+    ...(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
+      ? [
+          GoogleProvider({
+            clientId: process.env.GOOGLE_CLIENT_ID,
+            clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+          }),
+        ]
+      : []),
+    CredentialsProvider({
+      name: "credentials",
+      credentials: {
+        email: { label: "Email", type: "email" },
+        password: { label: "Password", type: "password" },
+      },
+      async authorize(credentials) {
+        if (!credentials?.email || !credentials?.password) {
+          return null;
+        }
+
+        const email = credentials.email.trim().toLowerCase();
+        const password = credentials.password.trim();
+
+        const user = await prisma.user.findUnique({
+          where: { email },
+        });
+
+        if (!user || !user.passwordHash) {
+          return null;
+        }
+
+        const isValid = await bcrypt.compare(password, user.passwordHash);
+
+        if (!isValid) {
+          return null;
+        }
+
+        return {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          image: user.image ?? user.avatarUrl ?? null,
+        };
+      },
+    }),
+  ],
+  callbacks: {
+    async jwt({ token, user }) {
+      if (user) {
+        token.id = user.id;
+        token.role = (user as { role?: string }).role;
+      }
+      return token;
+    },
+    async session({ session, token }) {
+      if (session.user) {
+        (session.user as { id?: string }).id = token.id as string;
+        (session.user as { role?: string }).role = token.role as string;
+      }
+      return session;
+    },
+  },
+  secret: process.env.NEXTAUTH_SECRET,
+};

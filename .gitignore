@@ -17,10 +17,20 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Environment Variables (CRITICAL: Do NOT commit credentials)
+# Environment variables
 .env
 .env*.local
-.env.production
+
+# SQLite local databases
+prisma/*.db
+prisma/*.db-journal
+*.db
+*.db-journal
+
+# Next.js build and cache
+.next/
+out/
+node_modules/
 
 # Python / FastAPI Artifacts
 __pycache__/

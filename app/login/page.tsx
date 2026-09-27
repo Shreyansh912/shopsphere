@@ -2,186 +2,164 @@
 
 import { useState } from "react";
 import { signIn } from "next-auth/react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 
 export default function LoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState("shreyanshsonkar59@gmail.com");
+  const searchParams = useSearchParams();
+  const callbackUrl = searchParams.get("callbackUrl") || "/";
+
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [infoMessage, setInfoMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [resetLoading, setResetLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    setInfoMessage(null);
     setLoading(true);
-
-    const cleanEmail = email.trim().toLowerCase();
-    const cleanPassword = password.trim();
-
-    if (!cleanEmail || !cleanPassword) {
-      setError("Please provide both email and password.");
-      setLoading(false);
-      return;
-    }
 
     try {
       const res = await signIn("credentials", {
         redirect: false,
-        email: cleanEmail,
-        password: cleanPassword,
+        email,
+        password,
+        callbackUrl,
       });
 
       if (res?.error) {
-        setError("Invalid email or password.");
+        setError(res.error === "CredentialsSignin" ? "Invalid email or password" : res.error);
       } else {
-        router.push("/");
+        router.push(callbackUrl);
         router.refresh();
       }
-    } catch {
-      setError("An unexpected error occurred. Please try again.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "An unexpected error occurred");
     } finally {
       setLoading(false);
     }
   };
 
-  const handleForgotPassword = async () => {
-    setError(null);
-    setInfoMessage(null);
-
-    const targetEmail = prompt("Enter your email address to reset password:", email);
-    if (!targetEmail || !targetEmail.trim()) return;
-
-    setResetLoading(true);
-    try {
-      const res = await fetch("/api/auth/forgot-password", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: targetEmail.trim().toLowerCase() }),
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        setError(data.error || "Failed to initiate password reset.");
-      } else if (data.devResetUrl) {
-        // In local development, redirect directly to the generated reset token link
-        router.push(data.devResetUrl);
-      } else {
-        setInfoMessage(data.message || "Password reset instructions generated.");
-      }
-    } catch {
-      setError("Failed to request password reset. Please try again.");
-    } finally {
-      setResetLoading(false);
-    }
-  };
-
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
-      <div className="w-full max-w-md p-8 bg-white rounded-2xl shadow-xl border border-gray-100">
-        <div className="text-center mb-6">
-          <h1 className="text-2xl font-bold tracking-tight text-gray-900">
-            Welcome Back
+    <div className="min-h-[85vh] flex items-center justify-center px-4 bg-slate-50/50">
+      <div className="w-full max-w-md p-8 space-y-6 bg-white border border-gray-200 rounded-2xl shadow-sm">
+        
+        {/* Header */}
+        <div className="text-center">
+          <Link href="/" className="inline-block text-2xl font-black tracking-tight text-indigo-600">
+            ShopSphere
+          </Link>
+          <h1 className="mt-4 text-2xl font-bold tracking-tight text-gray-900">
+            Welcome back
           </h1>
-          <p className="text-sm text-gray-500 mt-1">
-            Log in to your ShopSphere account
+          <p className="mt-1 text-xs text-gray-500">
+            Sign in to access your account, orders, and wishlist
           </p>
         </div>
 
+        {/* Error Alert */}
         {error && (
-          <div className="mb-4 p-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg text-center">
-            {error}
+          <div className="p-3 text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2">
+            <svg className="w-4 h-4 text-red-500 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+            </svg>
+            <span>{error}</span>
           </div>
         )}
 
-        {infoMessage && (
-          <div className="mb-4 p-3 text-sm text-blue-700 bg-blue-50 border border-blue-200 rounded-lg text-center">
-            {infoMessage}
-          </div>
-        )}
-
-        <form onSubmit={handleSubmit} className="space-y-4" autoComplete="off">
+        {/* Email & Password Form */}
+        <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label
-              htmlFor="email"
-              className="block text-sm font-medium text-gray-700 mb-1"
-            >
+            <label className="block text-xs font-semibold text-gray-700 mb-1">
               Email Address
             </label>
             <input
-              id="email"
               type="email"
               required
-              autoComplete="off"
+              autoComplete="email"
+              placeholder="you@example.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full px-4 py-2 text-sm bg-white border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-black"
+              className="w-full px-3.5 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 transition"
             />
           </div>
 
           <div>
-            <div className="flex justify-between items-center mb-1">
-              <label
-                htmlFor="password"
-                className="block text-sm font-medium text-gray-700"
-              >
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-xs font-semibold text-gray-700">
                 Password
               </label>
-              <button
-                type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                className="text-xs font-semibold text-blue-600 hover:underline"
-              >
-                {showPassword ? "Hide Plaintext" : "Show Plaintext"}
-              </button>
             </div>
             <input
-              id="password"
-              type={showPassword ? "text" : "password"}
+              type="password"
               required
-              autoComplete="new-password"
+              autoComplete="current-password"
+              placeholder="••••••••"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="Type password123"
-              className="w-full px-4 py-2 text-sm bg-white border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-black"
+              className="w-full px-3.5 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 transition"
             />
-            <div className="mt-1 text-xs font-medium text-gray-500 flex justify-between">
-              <span>Length: {password.length} characters</span>
-              <button
-                type="button"
-                onClick={handleForgotPassword}
-                disabled={resetLoading}
-                className="text-blue-600 hover:underline disabled:opacity-50"
-              >
-                {resetLoading ? "Generating..." : "Forgot password?"}
-              </button>
-            </div>
           </div>
 
           <button
             type="submit"
-            disabled={loading}
-            className="w-full py-2.5 px-4 bg-gray-900 text-white font-medium rounded-lg hover:bg-black transition disabled:opacity-50 mt-2"
+            disabled={loading || !email || !password}
+            className="w-full py-2.5 px-4 text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition disabled:opacity-50 flex items-center justify-center gap-2"
           >
-            {loading ? "Signing in..." : "Sign In"}
+            {loading ? (
+              <>
+                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                <span>Signing in...</span>
+              </>
+            ) : (
+              <span>Sign In with Email</span>
+            )}
           </button>
         </form>
 
-        <div className="mt-6 text-center text-sm text-gray-500">
+        {/* Divider */}
+        <div className="relative flex items-center justify-center">
+          <div className="w-full border-t border-gray-200" />
+          <span className="absolute bg-white px-3 text-xs text-gray-400 uppercase tracking-wider">
+            or
+          </span>
+        </div>
+
+        {/* Phone / Mobile Login Option */}
+        <div>
+          <Link
+            href="/login/phone"
+            className="w-full py-2.5 px-4 text-sm font-medium text-gray-700 bg-gray-50 hover:bg-gray-100 border border-gray-300 rounded-lg transition flex items-center justify-center gap-2"
+          >
+            <svg
+              className="w-4 h-4 text-gray-500"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="2"
+                d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"
+              />
+            </svg>
+            <span>Sign in with Mobile Number</span>
+          </Link>
+        </div>
+
+        {/* Register & Footer Links */}
+        <div className="pt-2 text-center text-xs text-gray-500 border-t border-gray-100">
           Don&apos;t have an account?{" "}
           <Link
             href="/register"
-            className="font-semibold text-gray-900 hover:underline"
+            className="font-semibold text-indigo-600 hover:text-indigo-500 transition"
           >
-            Register
+            Sign up
           </Link>
         </div>
+
       </div>
     </div>
   );

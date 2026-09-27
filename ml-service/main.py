@@ -1,140 +1,108 @@
-import io
-import os
-import torch
-import torchvision.models as models
-import torchvision.transforms as transforms
-from PIL import Image
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List, Optional
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
-app = FastAPI(
-    title="ShopSphere Visual Search Microservice",
-    description="ResNet-18 feature extraction & cosine similarity matching for product search",
-    version="1.0.0"
-)
+app = FastAPI(title="ShopSphere ML & Semantic Search Microservice", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-@app.get("/")
-def root():
-    return {
-        "status": "online",
-        "service": "ShopSphere ML Microservice",
-        "endpoints": {
-            "search": "POST /search",
-            "similar": "GET /similar/{product_id}",
-            "health": "GET /health"
-        }
-    }
+# In-memory document storage for fast semantic text retrieval
+class ProductDoc(BaseModel):
+    id: str
+    name: str
+    description: str
+    category: Optional[str] = None
 
-@app.get("/health")
+class IndexPayload(BaseModel):
+    products: List[ProductDoc]
+
+# Global state for vectors
+INDEXED_PRODUCTS: List[ProductDoc] = []
+VECTORIZER: Optional[TfidfVectorizer] = None
+TFIDF_MATRIX = None
+
+@app.get("/")
 def health_check():
     return {
         "status": "healthy",
-        "device": "cuda" if torch.cuda.is_available() else "cpu",
-        "indexed_products": len(CATALOG_IDS) if "CATALOG_IDS" in globals() else 0
+        "service": "ShopSphere ML Microservice",
+        "indexed_items": len(INDEXED_PRODUCTS)
     }
 
-# Device setup
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+@app.post("/index")
+def sync_catalog(payload: IndexPayload):
+    """Indexes the latest catalog from SQLite so FastAPI can run fast vector matches."""
+    global INDEXED_PRODUCTS, VECTORIZER, TFIDF_MATRIX
+    if not payload.products:
+        return {"message": "Empty catalog received", "count": 0}
 
-# Load pre-trained ResNet-18 feature extractor
-model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
-feature_extractor = torch.nn.Sequential(*list(model.children())[:-1])
-feature_extractor.eval()
-feature_extractor.to(device)
+    INDEXED_PRODUCTS = payload.products
+    corpus = [f"{p.name} {p.description} {p.category or ''}" for p in INDEXED_PRODUCTS]
 
-preprocess = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225]
-    ),
-])
+    VECTORIZER = TfidfVectorizer(stop_words="english")
+    TFIDF_MATRIX = VECTORIZER.fit_transform(corpus)
 
-# Load precomputed embeddings
-index_path = os.path.join(os.path.dirname(__file__), "catalog_embeddings.pt")
-if not os.path.exists(index_path):
-    index_path = "catalog_embeddings.pt"
+    return {"message": "Catalog indexed successfully", "count": len(INDEXED_PRODUCTS)}
 
-if not os.path.exists(index_path):
-    print("WARNING: 'catalog_embeddings.pt' not found. Run indexer.py first.")
-    CATALOG_IDS = []
-    CATALOG_EMBEDDINGS = torch.empty((0, 512))
-else:
-    index_data = torch.load(index_path, map_location="cpu")
-    CATALOG_IDS = index_data["product_ids"]
-    CATALOG_EMBEDDINGS = index_data["embeddings"]
-    print(f"Loaded {len(CATALOG_IDS)} product embeddings into memory.")
+@app.get("/search")
+def search_products(q: str = Query(..., min_length=1), limit: int = 12):
+    """Semantic vector search against product titles and descriptions."""
+    global INDEXED_PRODUCTS, VECTORIZER, TFIDF_MATRIX
 
-@app.post("/search")
-async def visual_search(file: UploadFile = File(...), top_k: int = 6):
-    if len(CATALOG_IDS) == 0:
-        raise HTTPException(status_code=503, detail="Embeddings index is not loaded.")
+    if not INDEXED_PRODUCTS or VECTORIZER is None or TFIDF_MATRIX is None:
+        return {"query": q, "product_ids": []}
 
-    try:
-        contents = await file.read()
-        image = Image.open(io.BytesIO(contents))
-        if image.mode != "RGB":
-            image = image.convert("RGB")
+    query_vec = VECTORIZER.transform([q])
+    similarities = cosine_similarity(query_vec, TFIDF_MATRIX).flatten()
 
-        tensor = preprocess(image).unsqueeze(0).to(device)
-        with torch.no_grad():
-            query_emb = feature_extractor(tensor).squeeze()
-            query_emb = query_emb / torch.norm(query_emb)
+    # Get indices of matches with positive similarity, sorted descending
+    top_indices = np.argsort(similarities)[::-1]
+    matching_ids = [
+        INDEXED_PRODUCTS[idx].id
+        for idx in top_indices
+        if similarities[idx] > 0.05
+    ][:limit]
 
-        query_emb = query_emb.cpu()
-        similarities = torch.mv(CATALOG_EMBEDDINGS, query_emb)
-        top_k_count = min(top_k, len(CATALOG_IDS))
-        top_scores, top_indices = torch.topk(similarities, k=top_k_count)
+    return {
+        "query": q,
+        "product_ids": matching_ids,
+        "matches_found": len(matching_ids)
+    }
 
-        results = []
-        seen = set()
-        for idx, score in zip(top_indices.tolist(), top_scores.tolist()):
-            pid = CATALOG_IDS[idx]
-            if pid not in seen:
-                seen.add(pid)
-                results.append({
-                    "productId": pid,
-                    "similarity": round(float(score), 4)
-                })
+@app.get("/recommendations/{product_id}")
+def get_recommendations(product_id: str, limit: int = 4):
+    """Content-based recommendations for 'Similar Products'."""
+    global INDEXED_PRODUCTS, TFIDF_MATRIX
 
-        return {"matches": results}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    if not INDEXED_PRODUCTS or TFIDF_MATRIX is None:
+        return {"product_id": product_id, "recommendations": []}
 
-@app.get("/similar/{product_id}")
-def get_similar_products(product_id: str, top_k: int = 4):
-    if len(CATALOG_IDS) == 0:
-        raise HTTPException(status_code=503, detail="Embeddings index is not loaded.")
+    target_idx = next((i for i, p in enumerate(INDEXED_PRODUCTS) if p.id == product_id), None)
+    if target_idx is None:
+        return {"product_id": product_id, "recommendations": []}
 
-    try:
-        target_idx = CATALOG_IDS.index(product_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Product ID not found in embeddings index.")
+    target_vec = TFIDF_MATRIX[target_idx]
+    similarities = cosine_similarity(target_vec, TFIDF_MATRIX).flatten()
 
-    target_emb = CATALOG_EMBEDDINGS[target_idx]
-    similarities = torch.mv(CATALOG_EMBEDDINGS, target_emb)
+    sorted_indices = np.argsort(similarities)[::-1]
+    # Exclude the target product itself (index 0)
+    recommended_ids = [
+        INDEXED_PRODUCTS[idx].id
+        for idx in sorted_indices
+        if idx != target_idx and similarities[idx] > 0.02
+    ][:limit]
 
-    # Fetch top_k + 1 to account for the product matching itself
-    top_scores, top_indices = torch.topk(similarities, k=min(top_k + 1, len(CATALOG_IDS)))
-
-    results = []
-    for idx, score in zip(top_indices.tolist(), top_scores.tolist()):
-        pid = CATALOG_IDS[idx]
-        if pid != product_id:
-            results.append({
-                "productId": pid,
-                "similarity": round(float(score), 4)
-            })
-        if len(results) == top_k:
-            break
-
-    return {"similar": results}
+    return {
+        "product_id": product_id,
+        "recommendations": recommended_ids
+    }
